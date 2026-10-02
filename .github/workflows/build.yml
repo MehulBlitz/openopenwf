@@ -1,0 +1,92 @@
+name: Build OpenWF Enabler
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: Build configuration
+        required: true
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Debug
+      target:
+        description: Project to compile
+        required: true
+        default: solution
+        type: choice
+        options:
+          - solution
+          - launcher
+          - native
+          - inspector
+      package:
+        description: Upload the compiled x64 output as an artifact
+        required: true
+        default: 'Yes'
+        type: choice
+        options:
+          - 'Yes'
+          - 'No'
+
+permissions:
+  contents: read
+
+env:
+  BUILD_CONFIGURATION: ${{ github.event.inputs.configuration || 'Release' }}
+  BUILD_TARGET: ${{ github.event.inputs.target || 'solution' }}
+  PACKAGE_OUTPUT: ${{ github.event.inputs.package || 'Yes' }}
+
+jobs:
+  build:
+    name: Build ${{ github.event.inputs.configuration || 'Release' }} (${{ github.event.inputs.target || 'solution' }})
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Set up NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        shell: pwsh
+        run: nuget restore openopenwf.sln
+
+      - name: Build selected target
+        shell: pwsh
+        run: |
+          $targetPath = switch ($env:BUILD_TARGET) {
+            'launcher' { 'openopenlauncher/openopenlauncher.vcxproj' }
+            'native' { 'openopenwf/openopenwf.vcxproj' }
+            'inspector' { 'openopenclr/openopenclr.csproj' }
+            default { 'openopenwf.sln' }
+          }
+
+          msbuild $targetPath /m /v:minimal /p:Configuration=$env:BUILD_CONFIGURATION /p:Platform=x64
+
+      - name: Package x64 build output
+        if: env.PACKAGE_OUTPUT == 'Yes'
+        shell: pwsh
+        run: |
+          $outputPath = "x64/$env:BUILD_CONFIGURATION"
+          if (-not (Test-Path $outputPath)) {
+            throw "Expected build output directory '$outputPath' was not created."
+          }
+
+          Compress-Archive -Path "$outputPath/*" -DestinationPath "openopenwf-x64-$env:BUILD_CONFIGURATION.zip" -Force
+
+      - name: Upload build artifact
+        if: env.PACKAGE_OUTPUT == 'Yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: openopenwf-x64-${{ github.event.inputs.configuration || 'Release' }}
+          path: openopenwf-x64-${{ github.event.inputs.configuration || 'Release' }}.zip
+          if-no-files-found: error
